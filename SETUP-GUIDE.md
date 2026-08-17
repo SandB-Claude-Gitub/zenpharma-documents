@@ -50,8 +50,8 @@ Two tables — fill in Phase 1 values before starting, Phase 2 values while Terr
 | `<YOUR-GITHUB-USERNAME>` | | Your GitHub username or org name |
 | `<YOUR-AWS-ACCOUNT-ID>` | | `aws sts get-caller-identity --query Account --output text` |
 | `<YOUR-TF-STATE-BUCKET>` | | Name you pick (must be globally unique, e.g. `zen-pharma-tf-YOURNAME`) |
-| `<TF-IAM-ACCESS-KEY-ID>` | | From Step 1b below |
-| `<TF-IAM-SECRET-ACCESS-KEY>` | | From Step 1b below |
+| `<TF-IAM-ACCESS-KEY-ID>` | | From Step 1a — `aws iam create-access-key` output |
+| `<TF-IAM-SECRET-ACCESS-KEY>` | | From Step 1a — `aws iam create-access-key` output |
 | `<YOUR-DB-PASSWORD>` | | Strong password you choose for RDS |
 | `<YOUR-JWT-SECRET>` | | Long random string (run: `openssl rand -hex 32`) |
 
@@ -69,30 +69,33 @@ Two tables — fill in Phase 1 values before starting, Phase 2 values while Terr
 
 ## Table of Contents
 
-**Phase 1 — Launch Terraform (your ~15 minutes)**
-1. [Create Manual AWS Resources — S3 + IAM](#step-1-create-manual-aws-resources--s3--iam)
-2. [Fork All Four Repositories](#step-2-fork-all-four-repositories)
-3. [Update Infra Code — S3 Bucket Name](#step-3-update-infra-code--s3-bucket-name)
-4. [Configure the Infra Repository in GitHub](#step-4-configure-the-infra-repository-in-github)
-5. [Trigger Terraform — Approve and Start](#step-5-trigger-terraform--approve-and-start)
+### Phase 1 — Launch Terraform *(~15 min of your time)*
 
-**⏱️ Terraform is now running (20-30 min) → proceed to Phase 2**
+- Step 1: [Create Manual AWS Resources — S3 + IAM](#step-1-create-manual-aws-resources--s3--iam)
+- Step 2: [Fork All Four Repositories](#step-2-fork-all-four-repositories)
+- Step 3: [Update Infra Code — S3 Bucket Name](#step-3-update-infra-code--s3-bucket-name)
+- Step 4: [Configure the Infra Repository in GitHub](#step-4-configure-the-infra-repository-in-github)
+- Step 5: [Trigger Terraform — Approve and Start](#step-5-trigger-terraform--approve-and-start)
 
-**Phase 2 — While Terraform Runs**
-6. [Create GitHub PAT — GITOPS_TOKEN](#step-6-create-github-pat--gitops_token)
-7. [Set Up SonarCloud](#step-7-set-up-sonarcloud)
-8. [Update GitOps Repository Code](#step-8-update-gitops-repository-code)
-9. [Configure Frontend Repository](#step-9-configure-frontend-repository)
-10. [Configure Backend Repository](#step-10-configure-backend-repository)
-11. [Create Branches and Enable Branch Protection](#step-11-create-branches-and-enable-branch-protection)
+> ⏱️ **Terraform is now running — 20-30 minutes → go to Phase 2**
 
-**Phase 3 — After Terraform Completes**
-12. [Verify Terraform Outputs](#step-12-verify-terraform-outputs)
-13. [Bootstrap the Kubernetes Cluster](#step-13-bootstrap-the-kubernetes-cluster)
-14. [Initialise the Database](#step-14-initialise-the-database)
-15. [Trigger the First Application Builds](#step-15-trigger-the-first-application-builds)
-16. [Verify Everything is Running](#step-16-verify-everything-is-running)
-17. [Troubleshooting](#step-17-troubleshooting)
+### Phase 2 — While Terraform Runs
+
+- Step 6: [Create GitHub PAT — GITOPS_TOKEN](#step-6-create-github-pat--gitops_token)
+- Step 7: [Set Up SonarCloud](#step-7-set-up-sonarcloud)
+- Step 8: [Update GitOps Repository Code](#step-8-update-gitops-repository-code)
+- Step 9: [Configure Frontend Repository](#step-9-configure-frontend-repository)
+- Step 10: [Configure Backend Repository](#step-10-configure-backend-repository)
+- Step 11: [Create Branches and Enable Branch Protection](#step-11-create-branches-and-enable-branch-protection)
+
+### Phase 3 — After Terraform Completes
+
+- Step 12: [Verify Terraform Outputs](#step-12-verify-terraform-outputs)
+- Step 13: [Bootstrap the Kubernetes Cluster](#step-13-bootstrap-the-kubernetes-cluster)
+- Step 14: [Initialise the Database](#step-14-initialise-the-database)
+- Step 15: [Trigger the First Application Builds](#step-15-trigger-the-first-application-builds)
+- Step 16: [Verify Everything is Running](#step-16-verify-everything-is-running)
+- Step 17: [Troubleshooting](#step-17-troubleshooting)
 
 ---
 
@@ -103,13 +106,65 @@ Two tables — fill in Phase 1 values before starting, Phase 2 values while Terr
 
 ---
 
-## Step 1: Create Manual AWS Resources — S3 + IAM
+## Step 1: Create Manual AWS Resources — IAM + S3
 
-Terraform manages all AWS infrastructure except these two resources, which must exist before Terraform can run:
-1. **S3 bucket** — stores Terraform state files
-2. **IAM user** — GitHub Actions uses its access keys to run Terraform
+Terraform manages all AWS infrastructure except these two, which must exist before Terraform can run:
 
-### 1a. Create the S3 State Bucket
+- **IAM user `terraform-user`** — GitHub Actions uses its access keys to run Terraform
+- **S3 bucket** — stores Terraform state files
+
+We create IAM first, then configure AWS CLI with those credentials, then create the S3 bucket — so everything from this point runs under `terraform-user`.
+
+### 1a. Create IAM User `terraform-user`
+
+Run this with your personal AWS admin credentials (whatever is currently in `aws configure`):
+
+```bash
+# Create the user
+aws iam create-user --user-name terraform-user
+
+# Attach AdministratorAccess (needed to create EKS, RDS, IAM roles, VPC, etc.)
+aws iam attach-user-policy \
+  --user-name terraform-user \
+  --policy-arn arn:aws:iam::aws:policy/AdministratorAccess
+
+# Create access keys — COPY THE OUTPUT NOW, you cannot retrieve it again
+aws iam create-access-key --user-name terraform-user
+```
+
+Output:
+```json
+{
+  "AccessKey": {
+    "AccessKeyId": "AKIAIOSFODNN7EXAMPLE",
+    "SecretAccessKey": "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+  }
+}
+```
+
+Save both values — you need them in two places:
+- **Step 4a** → GitHub Secrets (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`)
+- **Right now** → configure AWS CLI (next step)
+
+### 1b. Configure AWS CLI with `terraform-user`
+
+Switch your AWS CLI to use `terraform-user` credentials so the S3 bucket is created under the same identity that Terraform will use:
+
+```bash
+aws configure
+# AWS Access Key ID:     <AccessKeyId from above>
+# AWS Secret Access Key: <SecretAccessKey from above>
+# Default region:        us-east-1
+# Default output format: json
+
+# Verify you are now acting as terraform-user
+aws sts get-caller-identity
+# "Arn" should show: arn:aws:iam::<account-id>:user/terraform-user
+```
+
+### 1c. Create the S3 State Bucket
+
+Now running as `terraform-user`:
 
 ```bash
 export TF_STATE_BUCKET=<YOUR-TF-STATE-BUCKET>
@@ -120,7 +175,7 @@ aws s3api create-bucket \
   --bucket $TF_STATE_BUCKET \
   --region $AWS_REGION
 
-# Enable versioning (lets you recover from state corruption)
+# Enable versioning (allows recovery from accidental state corruption)
 aws s3api put-bucket-versioning \
   --bucket $TF_STATE_BUCKET \
   --versioning-configuration Status=Enabled
@@ -136,7 +191,7 @@ aws s3api put-bucket-encryption \
     }]
   }'
 
-# Block public access
+# Block all public access
 aws s3api put-public-access-block \
   --bucket $TF_STATE_BUCKET \
   --public-access-block-configuration \
@@ -144,35 +199,6 @@ aws s3api put-public-access-block \
 
 echo "State bucket ready: $TF_STATE_BUCKET"
 ```
-
-### 1b. Create an IAM User for Terraform GitHub Actions
-
-This user's access keys will be stored in GitHub Secrets. GitHub Actions uses them to call AWS APIs during `terraform plan` and `terraform apply`.
-
-```bash
-# Create the user
-aws iam create-user --user-name github-actions-terraform
-
-# Attach AdministratorAccess (needed to create EKS, RDS, IAM roles, VPC, etc.)
-aws iam attach-user-policy \
-  --user-name github-actions-terraform \
-  --policy-arn arn:aws:iam::aws:policy/AdministratorAccess
-
-# Create access keys — COPY THE OUTPUT, you will not see it again
-aws iam create-access-key --user-name github-actions-terraform
-```
-
-The output looks like:
-```json
-{
-  "AccessKey": {
-    "AccessKeyId": "AKIAIOSFODNN7EXAMPLE",
-    "SecretAccessKey": "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
-  }
-}
-```
-
-Save `AccessKeyId` as `<TF-IAM-ACCESS-KEY-ID>` and `SecretAccessKey` as `<TF-IAM-SECRET-ACCESS-KEY>`.
 
 ---
 
@@ -910,8 +936,8 @@ Use this as a final checklist before triggering Terraform.
 
 | Type | Name | Value |
 |---|---|---|
-| Secret | `AWS_ACCESS_KEY_ID` | IAM access key (from Step 1b) |
-| Secret | `AWS_SECRET_ACCESS_KEY` | IAM secret key (from Step 1b) |
+| Secret | `AWS_ACCESS_KEY_ID` | `terraform-user` access key (from Step 1a) |
+| Secret | `AWS_SECRET_ACCESS_KEY` | `terraform-user` secret key (from Step 1a) |
 | Variable | `GH_ORG` | `<YOUR-GITHUB-USERNAME>` |
 | Variable | `TF_STATE_BUCKET` | `<YOUR-TF-STATE-BUCKET>` |
 | Env Secret (`dev`) | `DEV_DB_PASSWORD` | `<YOUR-DB-PASSWORD>` |
